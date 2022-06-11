@@ -1,0 +1,597 @@
+---
+title: "Company Bankruptcy Prediction"
+author: "Matthew Zhang"
+date: "Spring 2022"
+output:
+  pdf_document: default
+  html_document:
+    toc: true
+    code_folding: show
+---
+
+## Introduction  
+PSTAT 131 Final Project:  
+
+![](data/bankrupt1.jpg)  
+
+
+|       Oftentimes it is difficult to recognize or even understand internal factors of why a certain company has gone bankrupt outside of typical zero profits and negative returns. In the current economy, companies are at the brink of debt as a result of inflation and a variety of other factors. Thus, there has been an increasing demand of business consultation in how to avoid bankruptcy and work around a volatile economy. In this project, I have tasked myself to be a business analyst aiming to help clients determine if their company/business is at risk of bankruptcy based on a variety of given statistics and variables in classification.  I will be providing recommendations, conclusions and speculation for future work in this notebook.
+\newpage
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+### Objective: 
+|       It will be a binary classification denoted by the classes 0 and 1 for surviving bankruptcy and going bankrupt, respectively. Further, determining which aspects that businesses can improve to avoid bankruptcy.  
+
+### About the data:
+I am using the "Company Bankruptcy Prediction" dataset taken from Kaggle.com that consists of thousands of companies that have either gone bankrupt or have not gone bankrupt. The data itself was obtained from the Taiwan Economic Journal from 1999-2009. The ability to predict company bankruptcy assesses fundamental financial concepts in insurance, stakeholders and investors. The dataset that will be loaded into a dataframe is composed of 6819 observations and 96 features. https://www.kaggle.com/datasets/fedesoriano/company-bankruptcy-prediction
+
+### Loading the data
+```{r}
+#Import necessary packages
+library(tidyverse)
+library(tidymodels)
+
+library(dplyr)
+library(corrr)
+library(caret)
+library(discrim)
+library(glmnet)
+library(ggplot2)
+library(GGally)
+library(corrplot)
+library(ggpubr)
+library(janitor)
+library(rpart.plot)
+library(randomForest)
+library(ranger)
+library(vip)
+library(xgboost)
+```
+
+Start by loading in the data and changing the variable names for easier analysis.
+```{r}
+#Import relevant data set
+df <- read_csv('data/data.csv', col_names = FALSE, skip = 1)
+
+head(df, 5)
+tail(df, 2)
+dim(df)
+```
+
+## Data Cleaning
+
+Rename outcome variable from "Bankrupt." to "bankrupt" and others into variable names. This will help for fluency and to avoid potential difficulties later on in EDA and modeling.  
+Decided that just having no columns names is better because the variable names are so long such as "RoaCBeforeInterestAndDepreciationBeforeInterest". Reference the codebook to interpret what the variables actually mean represent.
+
+```{r}
+#df <- clean_names(df, case='upper_camel')
+colnames(df)[1] <- "bankrupt"
+head(df, 3)
+```
+
+Observing variables in the data set and summary statistics
+```{r}
+str(df)
+summary(df)
+#describe(df)
+```
+
+Looking deeper into the columns, it is evident that all columns are numerical values and thus do not need to convert any categorical variables into dummy variables.
+Thus, we move forward and observe the presence of any null values.  
+```{r}
+dim(df)
+sum(is.na(df))
+sum(rowSums(is.na(df) | df == ""))
+```
+
+Evidently, there are no null values. Otherwise, I would consider dropping rows given enough data, or filling in values based on a measure of central tendency in the columns. We can move forward with checking duplicate values as well.  
+```{r}
+#No duplicate values
+sum(duplicated(df))
+```
+
+Looking at the number of unique values in the data frame. Noticeably, Net.Income.Flag only has 1 unique value which will not help for distinguishing classes. Thus, I chose to remove Net.Income.Flag (X95) as a predictor.  
+```{r}
+sapply(df, function(x) n_distinct(x))
+```
+
+Building off the previous logic, I remove all data with little to no variation which is analogous to high correlation between variables.
+```{r}
+no_var <- nearZeroVar(df)
+no_var[!no_var %in% 1]
+
+df <- df[ , -no_var[!no_var %in% 1]]
+dim(df)
+```
+
+When doing a classification problem, it is always important to look at the distribution of classes and see how that may influence our model. It seems there is a class imbalance and will look deeper during EDA phase.
+
+```{r}
+dplyr::count(df, bankrupt, sort = TRUE)
+```
+
+## EDA
+My exploratory data analysis will serve to not only understand the predictors better, but help visualize the distribution of variables that may not seem transparent initially.  
+More specifically, searching for variation and relationships between variables to tell a story.  
+I hope to dive deeper into the data to help maximize efficiency when running my models.
+First, visualize the distribution of classes as left off in the last phase.  
+
+```{r}
+colnames(df)
+```
+
+Visualize the distribution of the outcome variable and examine the level of class imbalance. Exploring the 'bankrupt' count and percentage distributions. 
+```{r}
+ggplot(df, aes(bankrupt)) + 
+  geom_bar(fill = c("Green","Red")) + 
+  theme_bw() + 
+  ggtitle("Companies Survived vs Companies Bankrupt") + 
+  theme(plot.title = element_text(hjust = 0.5)) + 
+  xlab("0                                                              1")
+
+#Show relevant counts and percentage of classes
+table(df$bankrupt)
+prop.table(table(df$bankrupt))
+```
+From the results, class 0 consists of approximately 96.7% of the observations while class 1 consists of approximately 3.3% of the observations. There is a class imbalance which produces a general risk model predictability, but also of over-fitting and inaccuracy.
+Intuitively, it makes sense that more companies survive bankruptcy as opposed to going bankrupt.
+
+Visualization in Principal Component Analysis
+```{r}
+pca1 <- prcomp(df[, 2:94], center=T, scale = TRUE)
+
+total_var <- sum(pca1$sdev^2)
+var_explained <- data.frame(pc = seq(1:93), var_explained  = pca1$sdev^2 / total_var )
+
+ggplot(var_explained, aes(pc, var_explained)) + 
+  geom_line() + 
+  xlab("Principal Components") +
+  ylab("Variance Explained") +
+  ggtitle("PCA Bankruptcy")
+
+data_df <- data.frame(pc1 = pca1$x[, 1], pc2 = pca1$x[, 2], pc3 = pca1$x[, 3], labels = as.factor(df$bankrupt))
+
+ggplot(data_df, aes(pc1, pc3, col = labels)) + 
+  geom_point()
+```
+These PCA plots simply help visualize the amount of explained variance in principal components and if it is required. First plot communicates the number of explained variances by principal components. The second plot compares principal component 1 and principal component 3.
+
+Correlation Matrix
+```{r}
+library(ggcorrplot)
+bank_corr <- cor(df[,-1])
+ggcorrplot(bank_corr, tl.cex = 4, tl.srt = 50)
+```
+
+Visibly, X44 and X23, X24 have high positive correlation which indicates potential to drop due to similar variables. Moreover, X17 and X18, X19, X20.  
+Alternatively,  
+
+```{r}
+df %>%
+  select(where(is.numeric)) %>%
+  cor(use = "complete.obs") %>%
+  corrplot(type = "lower", diag = FALSE)
+```
+
+Looking at the matrices, we can try to remove a lot of the highly correlated features that essentially provide the same information to the model's learning and will only introduce more noise. Thus, we remove those predictors with a correlation of higher than 75%. Although this is arbitrarily chosen, it communicates the number of predictors with high correlation; typically a threshold of above 50%.
+```{r}
+cor_df <- cor(df[,-1])
+
+high_corr <- findCorrelation(cor_df, cutoff = .75)
+high_corr[!high_corr %in% 1]
+
+df <- df[,-high_corr[!high_corr %in% 1]]
+```
+
+Explore the statistics of some given variables
+```{r}
+#Boxplots
+par(mfrow = c(2,4))
+for (i in seq(10:49))
+  boxplot(df[,i],xlab=colnames(df)[i],col=i)
+```
+
+Looking at the distrbution of observations for some variables.
+```{r}
+ggplot(df, aes(x = X5)) + 
+  geom_histogram(binwidth = 0.01)
+
+ggplot(df, aes(x = X14)) + 
+  geom_histogram(binwidth = 0.01)
+
+ggplot(df, aes(x = X20)) + 
+  geom_histogram(binwidth = 0.01)
+
+ggplot(df, aes(x = X53)) + 
+  geom_histogram(binwidth = 0.01)
+
+ggplot(df, aes(x = X81)) + 
+  geom_histogram(binwidth = 0.01)
+```
+Most of the variables are or near normally distributed which is a good sign for general assumptions. Let's observe a few relationships between the variables.
+
+```{r}
+ggplot(df) +
+  geom_point(mapping = aes(x = X5, y = X20))
+
+ggplot(df) +
+  geom_point(mapping = aes(x = X21, y = X33))
+
+ggplot(df) +
+  geom_point(mapping = aes(x = X33, y = X81))
+```
+An interesting near heteroscedastic relationship between X21 and X33
+
+How does current liability look across current assets?
+```{r}
+df %>%
+    group_by(bankrupt)%>%
+    dplyr::summarize(TAGR = X82)%>%
+    ggplot()+
+    geom_density(aes(TAGR, group = bankrupt, fill = bankrupt), alpha = .5)+ 
+    xlab("")+
+    ggtitle("CFO to assets")
+```
+Survived and bankrupt have similar trends.
+
+Current Liability to Equity
+```{r}
+df %>%
+    group_by(bankrupt) %>%
+    dplyr::summarise(TAGR = X78) %>%
+    ggplot() +
+    geom_density(aes(TAGR, group = bankrupt, fill = bankrupt), alpha = .5) + 
+    xlab("") +
+    ggtitle("Current Liability to Liability")
+```
+Survived seems to break off for current liability to increased liability.
+
+```{r}
+df %>%
+    group_by(bankrupt) %>%
+    dplyr::summarise(TAGR = X30) %>%
+    ggplot() +
+    geom_density(aes(TAGR, group = bankrupt, fill = bankrupt), alpha = .5) + 
+    xlab("") +
+    ggtitle("Total Asset Growth Rate: Total Asset Growth")
+```
+Survived has a big higher proportional total asset growth rate.
+
+```{r}
+df %>%
+    group_by(bankrupt) %>%
+    dplyr::summarise(TAGR = X69) %>%
+    ggplot() +
+    geom_density(aes(TAGR, group = bankrupt, fill = bankrupt), alpha = .5) + 
+    xlab("") +
+    ggtitle("Retained Earnings to Total Assets")
+```
+
+
+## Modeling
+### Set Seed and Splitting the Data
+We look towards model fitting and will start with a baseline for each model. The data split will be 75% training and 25% testing sets with stratified sampling upon the outcome 'bankrupt'.
+
+```{r}
+df$bankrupt <-factor(df$bankrupt, levels=c(0, 1))
+#Initial Split
+
+train_test_split <- initial_split(df, strata = 'bankrupt', prop = 0.8)
+train_df <- training(train_test_split)
+test_df <- testing(train_test_split)
+
+#Double check number of observations
+dim(train_df)
+dim(test_df)
+
+#Convert outcome to factor
+#df$bankrupt <- as.factor(df$bankrupt)
+head(df)
+```
+
+Now, use K-fold cross-validation setting k = 5.  
+
+```{r}
+bank_folds <- vfold_cv(train_df, v = 5, strata = 'bankrupt')
+bank_folds
+```
+We are performing k-folds cross validation which is a form of cross validation that takes multiple subsets of the training data to fit the model on. This is effective because it allows all observations to be input into the model which reduces bias. In essence, there are multiple iterations of validation where taking a certain fold assesses the model while the remaining are used to fit the model and thus, re-sampling.
+
+Start by modeling with Logistic Regression, typically a great model for binary classification as it predicts the percentage of being in one or two classes at a given threshold. We can avoid step_impute_linear() because we have no missing values and hence, do not require the imputation. 
+
+Establishing a baseline model and analyzing the results.
+### Baseline Model
+Untuned Logistic Regression.
+```{r}
+bank_recipe <- recipe(bankrupt ~ ., data = train_df) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_center(all_numeric()) %>%
+  step_scale(all_numeric())
+```
+
+```{r}
+log_reg <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+log_wf <- workflow() %>%
+  add_model(log_reg) %>%
+  add_recipe(bank_recipe)
+
+log_fit <- fit_resamples(log_wf, bank_folds)
+```
+
+```{r}
+collect_metrics(log_fit)
+```
+
+```{r}
+log_test <- fit(log_wf, test_df)
+predict(log_test, new_data = test_df, type = "class") %>%
+  bind_cols(test_df) %>%
+  accuracy(truth = bankrupt, estimate = .pred_class)
+```
+
+We can see that the model is performing very well; which is unsual and might need some further exploration. This is as a result of the class imbalance where it is predicting Survived/Not Bankrupt most of the time because ~97% of the observations consist of this. The immediate solution to this imbalance is upsampling as mentioned in lecture. The idea is that it will increase the minority class in this case Survived/Not Bankrupt and sample with replacement, balancing out the classes for better training. 
+
+```{r}
+train_up <- upSample(y = train_df$bankrupt,
+                    x = train_df[,-1],
+                    yname = "bankrupt")
+table(train_up$bankrupt)
+```
+
+```{r}
+bank_folds1 <- vfold_cv(train_up, v = 5, strata = 'bankrupt')
+bank_folds1
+```
+
+```{r}
+bank_recipe1 <- recipe(bankrupt ~ ., data = train_up) %>%
+  step_dummy(all_nominal_predictors()) %>%
+  step_center(all_numeric()) %>%
+  step_scale(all_numeric())
+```
+
+```{r}
+log_reg1 <- logistic_reg() %>%
+  set_engine("glm") %>%
+  set_mode("classification")
+
+log_wf1 <- workflow() %>%
+  add_model(log_reg1) %>%
+  add_recipe(bank_recipe1)
+
+log_fit1 <- fit_resamples(log_wf1, bank_folds1)
+```
+
+```{r}
+collect_metrics(log_fit1)
+```
+
+Although the accuracy has decreased, our model has a lot more predictive power rather than simply predicting 0 or "Not Bankrupt" for most predictions. More samples allows the model to have more data to work with for both classes.
+
+Let's move forward with other models to see how they perform.
+#### Linear Discriminant Analysis
+Simply testing performance.
+```{r}
+control <- control_resamples(save_pred = TRUE)
+lda_mod <- discrim_linear() %>%
+  set_engine("MASS") %>%
+  set_mode("classification")
+
+lda_wf <- workflow() %>%
+  add_recipe(bank_recipe1) %>%
+  add_model(lda_mod)
+
+lda_fit <- fit_resamples (resamples = bank_folds1,
+                          lda_wf,
+                          control = control)
+```
+Look at metrics.
+```{r}
+collect_metrics(lda_fit)
+```
+
+### KNN
+K-Nearest Neighbors is a form of supervised learning for classification in this case. KNN is distance-based and implicitly assumes the smaller the distance between two points, the more similar they are. Will be fitting a KNN model and as usual, setting up model and workflow.
+```{r}
+#Set up model and workflow
+knn_model <- nearest_neighbor(neighbors = tune(), mode = "classification") %>% 
+  set_engine("kknn")
+
+knn_wf <- workflow() %>% 
+  add_model(knn_model) %>% 
+  add_recipe(bank_recipe1)
+```
+
+Create a tuning grid by defining it.
+```{r}
+#We need to determine best K
+knn_params <- extract_parameter_set_dials(knn_model)
+
+knn_grid <- grid_regular(knn_params, levels = 2)
+```
+Fit the resampled k-fold cross validation. 
+```{r}
+library(kknn)
+knn_tune <- knn_wf %>% 
+  tune_grid(resamples = bank_folds1, grid = knn_grid)
+```
+Visualize the behavior of K.
+```{r}
+autoplot(knn_tune, metric = "accuracy")
+```
+
+Display best K based on accuracy metric for binary classification.
+```{r}
+show_best(knn_tune, metric = "accuracy")
+```
+
+
+### Decision Trees
+Decision trees are typically used to classify or estimate continuous values by partitioning the sample space efficiently into sets with similar data points until one gets closer to a homogenous set and can reasonably predict the value for new data points.  
+Define model and workflow.
+```{r}
+tree_model <- decision_tree(
+  mode = "classification") %>% 
+  set_engine("rpart")
+
+tree_wf <- workflow() %>% 
+  add_model(tree_model %>%
+              set_args(cost_complexity = tune())) %>%
+  add_recipe(bank_recipe1)
+```
+
+Create a tuning grid by defining it.
+```{r}
+tree_grid <- grid_regular(cost_complexity(range = c(-5, -1)), levels = 3)
+```
+```{r}
+tree_tune <- tune_grid(
+  tree_wf,
+  resamples = bank_folds1,
+  grid = tree_grid
+)
+```
+Visualize using a plot the accuracy with cost complexity parameter.
+```{r}
+autoplot(tree_tune, metric = "accuracy")
+```
+To confirm our results, let's take a look at the best tree and complexity.
+```{r}
+show_best(tree_tune, metric = "accuracy")
+```
+Get best pruned tree.
+```{r}
+best_pruned <- select_best(tree_tune, metric = "accuracy")
+best_pruned
+```
+Finalize the workflow for decision trees.
+```{r}
+best_comp <- select_best(tree_tune)
+tree_final <- finalize_workflow(tree_wf, best_comp)
+tree_final_fit <- fit(tree_final, data = train_up)
+```
+Final decision tree visualized.
+```{r}
+tree_final_fit %>%
+  extract_fit_engine() %>%
+  rpart.plot()
+```
+
+### Random Forests
+Random forests are an ensemble method of decision trees used for both classification and regression. Although decision trees use a greedy algorithm, by maximizing data; we use the idea of "wisdom of the crowds" to generate an efficient model and collection of results and buffering performance.  
+Define model and workflow.
+```{r}
+rf_model <- rand_forest(
+              min_n = tune(),
+              mtry = tune(),
+              mode = "classification") %>% 
+  set_engine("ranger")
+
+rf_wf <- workflow() %>% 
+  add_model(rf_model) %>% 
+  add_recipe(bank_recipe1)
+```
+
+```{r}
+rf_params <- extract_parameter_set_dials(rf_model) %>% 
+  update(mtry = mtry(range = c(2, 20)),
+         min_n = min_n(range = c(2, 10)))
+
+rf_grid <- grid_regular(rf_params, levels = 2)
+```
+
+```{r}
+rf_tune <- rf_wf %>% 
+  tune_grid(
+    resamples = bank_folds1, 
+    grid = rf_grid)
+```
+Visualize using a plot the accuracy with randomly selected predictors.
+
+```{r}
+autoplot(rf_tune, metric = "accuracy")
+```
+To confirm our results, let's take a look at the best rf.
+```{r}
+show_best(rf_tune, metric = "accuracy")
+```
+
+### Boosted Trees
+Boosted trees are a form of gradient boosting and forms a class of algorithms rather than a single one.  
+Define model and workflow.
+```{r}
+bt_model <- boost_tree(mode = "classification",
+                       min_n = tune(),
+                       mtry = tune(),
+                       learn_rate = tune()) %>% 
+  set_engine("xgboost")
+
+bt_wf <- workflow() %>% 
+  add_model(bt_model) %>% 
+  add_recipe(bank_recipe1)
+```
+
+```{r}
+bt_params <- extract_parameter_set_dials(bt_model) %>% 
+  update(mtry = mtry(range= c(2, 80)),
+         learn_rate = learn_rate(range = c(-2, 0.2))
+  )
+
+# define grid
+bt_grid <- grid_regular(bt_params, levels = 2)
+```
+
+```{r}
+bt_tune <- bt_wf %>% 
+  tune_grid(resamples = bank_folds1, 
+    grid = bt_grid)
+```
+Visualize using a plot the accuracy with randomly selected predictors.
+
+```{r}
+autoplot(bt_tune, metric = "accuracy")
+```
+To confirm our results, let's take a look at the best boosted tree.
+```{r}
+show_best(bt_tune, metric = "accuracy")
+```
+
+Optimal parameters of learn_rate = 1.58, min_n = 2, mtry = 80 with a higher mean than our logistic regression model.
+
+Let's fit our final model and generate predictions
+```{r}
+rf_final <- rf_wf %>%
+  finalize_workflow(select_best(rf_tune, metric = "accuracy"))
+```
+
+```{r}
+rf_final_fit <- fit(rf_final, train_up)
+rf_final_fit
+```
+```{r}
+rf_final_fit %>% extract_fit_engine()
+```
+
+Obtain the final accuracy for the testing set. 
+```{r}
+rf_final_acc <- augment(rf_final_fit, new_data = test_df) %>% 
+  accuracy(truth = bankrupt, estimate = .pred_class)
+rf_final_acc
+```
+
+## Conclusions
+By way of conclusion, after training and tuning many models including Logistic Regression, Linear Discriminant Analysis, Decision Trees, Random Forests and Boosted Trees, it is evident that our final random forests model performed the best with a .96 accuracy that can be interpreted as 96% of observations were correctly predicted as opposed to incorrectly predicted in a binary classification. This can be deducted by the fact that it is an ensemble method and is built upon multiple decision trees and a bit less prone to error from a single tree. For this case, it was interesting to note that given the bankruptcy data to make predictions, the algorithm provided only the appropriate features to each tree in the forest, getting that tree's individual prediction, and then aggregates all predictions together to determine the overall prediction that the algorithm will make for said data.  
+
+Furthermore, it may be a bit illusive that our model has a ridiculously high accuracy. We can acknowledgeable that this is too high and we know that the model is simply predicting a majority to be 0 or not bankrupt, and thus a higher accuracy. In simple use cases, it might be applicable to say that the ones that the model does detect means the companies are noticeably more at risk of bankruptcy than the ones that were not detected by the model.  
+
+Overall, we can conclude that there a variety of contributing factors that denote bankruptcy within a company more so than others. This data set provided a lot of inside into the vulnerability of businesses and helps others learn from previous companies gone bankrupt and others that have survived. In a way, they have set a precedent with this data and analysis for future businesses.  
+
+## Future Work  
+For future work, I would conduct a fully researched PCA within my modeling considering the large number of variables. Yet, through feature engineering and without categorical dummy variables denoting 0 and 1 it was avoidable in computing.
+Furthermore, I want to address the over-fitting and default prediction of 0 saving the model accuracy; considering L1 and L2 regression to combat this issue. 
